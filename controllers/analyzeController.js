@@ -15,7 +15,10 @@ const analyzeNews = async (req, res) => {
     console.log("URL:", url);
     console.log("Article:", articleText);
 
-    // 1. Check input
+    // ==========================================
+    // 1. CHECK INPUT
+    // ==========================================
+
     if (!url?.trim() && !articleText?.trim()) {
       return res.status(400).json({
         success: false,
@@ -25,7 +28,10 @@ const analyzeNews = async (req, res) => {
 
     let content = articleText?.trim() || "";
 
-    // 2. Scrape URL if provided
+    // ==========================================
+    // 2. SCRAPE URL IF PROVIDED
+    // ==========================================
+
     if (url?.trim()) {
       console.log("Scraping URL...");
 
@@ -33,12 +39,17 @@ const analyzeNews = async (req, res) => {
         headers: {
           "User-Agent":
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+
           Accept:
             "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+
           "Accept-Language": "en-US,en;q=0.9",
+
           Referer: "https://www.google.com/",
+
           Connection: "keep-alive",
         },
+
         timeout: 15000,
       });
 
@@ -57,24 +68,32 @@ const analyzeNews = async (req, res) => {
       if (!content.trim()) {
         return res.status(400).json({
           success: false,
-          message: "Could not extract article text from this URL.",
+          message:
+            "Could not extract article text from this URL.",
         });
       }
     }
 
     console.log("CONTENT LENGTH:", content.length);
 
-    // 3. Check Gemini API key
+    // ==========================================
+    // 3. CHECK GEMINI API KEY
+    // ==========================================
+
     if (!process.env.GEMINI_API_KEY) {
       console.error("GEMINI_API_KEY is missing");
 
       return res.status(500).json({
         success: false,
-        message: "Gemini API key is missing in backend .env file.",
+        message:
+          "Gemini API key is missing in backend environment.",
       });
     }
 
-    // 4. Send article to Gemini
+    // ==========================================
+    // 4. SEND ARTICLE TO GEMINI
+    // ==========================================
+
     console.log("Sending article to Gemini...");
 
     const prompt = `
@@ -93,11 +112,29 @@ Return ONLY valid JSON in exactly this format:
 }
 
 Rules:
+
 - fakeScore must be a number from 0 to 100.
 - credibilityScore must be a number from 0 to 100.
-- bias must be one of: "Neutral", "Left", "Right", "Mixed".
-- sentiment must be one of: "Positive", "Negative", "Neutral".
+
+- fakeScore represents the estimated risk that the article contains
+  false or misleading information.
+
+- credibilityScore represents how credible and factually consistent
+  the article appears based on the information provided.
+
+- Do not assume that every article must have a fakeScore above 0.
+- If the article contains a straightforward factual statement with no
+  apparent falsehood or misleading claim, fakeScore can be 0.
+- If the article appears highly credible, credibilityScore can be 100.
+
+- bias must be one of:
+  "Neutral", "Left", "Right", "Mixed"
+
+- sentiment must be one of:
+  "Positive", "Negative", "Neutral"
+
 - summary must be short and clear.
+
 - Do not use markdown.
 - Do not add anything outside the JSON.
 
@@ -106,8 +143,12 @@ ${content}
 `;
 
     const aiResponse = await ai.models.generateContent({
-      model: process.env.GEMINI_MODEL || "gemini-2.5-flash-lite",
+      model:
+        process.env.GEMINI_MODEL ||
+        "gemini-3.5-flash-lite",
+
       contents: prompt,
+
       config: {
         responseMimeType: "application/json",
       },
@@ -126,14 +167,20 @@ ${content}
       });
     }
 
-    // 5. Parse Gemini JSON
+    // ==========================================
+    // 5. PARSE GEMINI JSON
+    // ==========================================
+
     let analysis;
 
     try {
       analysis = JSON.parse(aiContent);
     } catch (error) {
       console.error("JSON PARSE ERROR:", error);
-      console.error("RAW GEMINI RESPONSE:", aiContent);
+      console.error(
+        "RAW GEMINI RESPONSE:",
+        aiContent
+      );
 
       return res.status(500).json({
         success: false,
@@ -143,81 +190,247 @@ ${content}
 
     console.log("ANALYSIS:", analysis);
 
-    // 6. Save in database
-    const savedAnalysis = await prisma.analysis.create({
-      data: {
-        title: url?.trim() || "Manual News",
-        url: url?.trim() || null,
-        articleText: content,
-        summary: analysis.summary || "",
-        fakeScore: Number(analysis.fakeScore) || 0,
-        credibilityScore:
-          Number(analysis.credibilityScore) || 0,
-        bias: analysis.bias || "Neutral",
-        sentiment: analysis.sentiment || "Neutral",
-        userId: req.user.id,
+    // ==========================================
+    // 6. NORMALIZE SCORES
+    // ==========================================
+
+    const fakeScore = Math.min(
+      100,
+      Math.max(
+        0,
+        Number(analysis.fakeScore) || 0
+      )
+    );
+
+    const credibilityScore = Math.min(
+      100,
+      Math.max(
+        0,
+        Number(analysis.credibilityScore) || 0
+      )
+    );
+
+    // ==========================================
+    // 7. FINAL VERDICT
+    // ==========================================
+
+    let finalVerdict;
+    let verdictType;
+
+    /*
+      VERDICT RULES
+
+      Fake Score >= 50
+          -> Likely Fake News
+
+      Fake Score < 50 AND
+      Credibility >= 70
+          -> Likely Genuine News
+
+      Otherwise
+          -> Needs Verification
+    */
+
+    if (fakeScore >= 50) {
+      finalVerdict = "Likely Fake News";
+      verdictType = "FAKE";
+    } else if (credibilityScore >= 70) {
+      finalVerdict = "Likely Genuine News";
+      verdictType = "GENUINE";
+    } else {
+      finalVerdict = "Needs Verification";
+      verdictType = "UNCERTAIN";
+    }
+
+    console.log(
+      "FAKE SCORE:",
+      fakeScore
+    );
+
+    console.log(
+      "CREDIBILITY SCORE:",
+      credibilityScore
+    );
+
+    console.log(
+      "FINAL VERDICT:",
+      finalVerdict
+    );
+
+    console.log(
+      "VERDICT TYPE:",
+      verdictType
+    );
+
+    // ==========================================
+    // 8. SAVE ANALYSIS IN DATABASE
+    // ==========================================
+
+    const savedAnalysis =
+      await prisma.analysis.create({
+        data: {
+          title:
+            url?.trim() ||
+            "Manual News",
+
+          url:
+            url?.trim() ||
+            null,
+
+          articleText: content,
+
+          summary:
+            analysis.summary ||
+            "",
+
+          fakeScore:
+            fakeScore,
+
+          credibilityScore:
+            credibilityScore,
+
+          bias:
+            analysis.bias ||
+            "Neutral",
+
+          sentiment:
+            analysis.sentiment ||
+            "Neutral",
+
+          userId:
+            req.user.id,
+        },
+      });
+
+    console.log(
+      "ANALYSIS SAVED:",
+      savedAnalysis.id
+    );
+
+    // ==========================================
+    // 9. SEND RESULT TO FRONTEND
+    // ==========================================
+
+    return res.status(200).json({
+      success: true,
+
+      message:
+        "Analysis saved successfully",
+
+      analysis: {
+        ...savedAnalysis,
+
+        finalVerdict,
+        verdictType,
       },
     });
 
-    console.log("ANALYSIS SAVED:", savedAnalysis.id);
-
-    // 7. Send result to frontend
-    return res.status(200).json({
-      success: true,
-      message: "Analysis saved successfully",
-      analysis: savedAnalysis,
-    });
   } catch (err) {
-    console.error("===== ANALYZE ERROR =====");
-    console.error("MESSAGE:", err.message);
-    console.error("STATUS:", err.status);
-    console.error("DATA:", err.response?.data);
 
-    // URL scraping blocked
+    // ==========================================
+    // ERROR LOGGING
+    // ==========================================
+
+    console.error(
+      "===== ANALYZE ERROR ====="
+    );
+
+    console.error(
+      "MESSAGE:",
+      err.message
+    );
+
+    console.error(
+      "STATUS:",
+      err.status
+    );
+
+    console.error(
+      "DATA:",
+      err.response?.data
+    );
+
+    // ==========================================
+    // URL SCRAPING BLOCKED
+    // ==========================================
+
     if (err.response?.status === 403) {
       return res.status(400).json({
         success: false,
+
         message:
           "This website does not allow automatic article access. Please paste the article text instead.",
       });
     }
 
-    // Gemini authentication error
+    // ==========================================
+    // GEMINI AUTHENTICATION ERROR
+    // ==========================================
+
     if (
       err.status === 401 ||
       err.status === 403 ||
-      err.message?.toLowerCase().includes("api key")
+      err.message
+        ?.toLowerCase()
+        .includes("api key")
     ) {
       return res.status(500).json({
         success: false,
+
         message:
           "Gemini authentication failed. Please check the Gemini API key.",
       });
     }
 
-    // Gemini rate limit
+    // ==========================================
+    // GEMINI RATE LIMIT
+    // ==========================================
+
     if (err.status === 429) {
       return res.status(429).json({
         success: false,
+
         message:
           "Gemini rate limit reached. Please try again later.",
       });
     }
 
-    // Timeout
+    // ==========================================
+    // GEMINI SERVICE UNAVAILABLE
+    // ==========================================
+
+    if (err.status === 503) {
+      return res.status(503).json({
+        success: false,
+
+        message:
+          "Gemini is currently experiencing high demand. Please try again in a few moments.",
+      });
+    }
+
+    // ==========================================
+    // TIMEOUT
+    // ==========================================
+
     if (
       err.code === "ECONNABORTED" ||
       err.code === "ETIMEDOUT"
     ) {
       return res.status(408).json({
         success: false,
-        message: "The request took too long. Please try again.",
+
+        message:
+          "The request took too long. Please try again.",
       });
     }
 
-    // General error
+    // ==========================================
+    // GENERAL ERROR
+    // ==========================================
+
     return res.status(500).json({
       success: false,
+
       message:
         err.response?.data?.error?.message ||
         err.response?.data?.message ||
@@ -233,51 +446,81 @@ ${content}
 
 const getDashboardStats = async (req, res) => {
   try {
-    const analyses = await prisma.analysis.findMany({
-      where: {
-        userId: req.user.id,
-      },
-      orderBy: {
-        createdAt: "desc",
-      },
-    });
 
-    const totalAnalyses = analyses.length;
+    const analyses =
+      await prisma.analysis.findMany({
+        where: {
+          userId: req.user.id,
+        },
+
+        orderBy: {
+          createdAt: "desc",
+        },
+      });
+
+    const totalAnalyses =
+      analyses.length;
 
     const averageCredibility =
       totalAnalyses > 0
         ? analyses.reduce(
             (sum, item) =>
-              sum + Number(item.credibilityScore || 0),
+              sum +
+              Number(
+                item.credibilityScore || 0
+              ),
             0
           ) / totalAnalyses
         : 0;
 
-    const fakeNewsDetected = analyses.filter(
-      (item) => Number(item.fakeScore || 0) >= 50
-    ).length;
+    const fakeNewsDetected =
+      analyses.filter(
+        (item) =>
+          Number(
+            item.fakeScore || 0
+          ) >= 50
+      ).length;
 
     return res.status(200).json({
       success: true,
 
       stats: {
         totalAnalyses,
-        averageCredibility: Math.round(averageCredibility),
+
+        averageCredibility:
+          Math.round(
+            averageCredibility
+          ),
+
         fakeNewsDetected,
-        articlesChecked: totalAnalyses,
+
+        articlesChecked:
+          totalAnalyses,
       },
 
-      recentAnalyses: analyses.slice(0, 5),
+      recentAnalyses:
+        analyses.slice(0, 5),
     });
+
   } catch (error) {
-    console.error("DASHBOARD STATS ERROR:", error);
+
+    console.error(
+      "DASHBOARD STATS ERROR:",
+      error
+    );
 
     return res.status(500).json({
       success: false,
-      message: "Failed to fetch dashboard statistics.",
+
+      message:
+        "Failed to fetch dashboard statistics.",
     });
   }
 };
+
+// ==========================================
+// EXPORT
+// ==========================================
 
 module.exports = {
   analyzeNews,
