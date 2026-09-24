@@ -15,10 +15,7 @@ const analyzeNews = async (req, res) => {
     console.log("URL:", url);
     console.log("Article:", articleText);
 
-    // ==========================================
     // 1. CHECK INPUT
-    // ==========================================
-
     if (!url?.trim() && !articleText?.trim()) {
       return res.status(400).json({
         success: false,
@@ -28,28 +25,20 @@ const analyzeNews = async (req, res) => {
 
     let content = articleText?.trim() || "";
 
-    // ==========================================
     // 2. SCRAPE URL IF PROVIDED
-    // ==========================================
-
     if (url?.trim()) {
       console.log("Scraping URL...");
 
       const response = await axios.get(url, {
         headers: {
           "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
-
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151.0.0.0 Safari/537.36",
           Accept:
             "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-
           "Accept-Language": "en-US,en;q=0.9",
-
           Referer: "https://www.google.com/",
-
           Connection: "keep-alive",
         },
-
         timeout: 15000,
       });
 
@@ -76,10 +65,19 @@ const analyzeNews = async (req, res) => {
 
     console.log("CONTENT LENGTH:", content.length);
 
-    // ==========================================
-    // 3. CHECK GEMINI API KEY
-    // ==========================================
+    // 3. LIMIT ARTICLE SIZE
+    const MAX_CONTENT_LENGTH = 12000;
 
+    if (content.length > MAX_CONTENT_LENGTH) {
+      content = content.substring(0, MAX_CONTENT_LENGTH);
+
+      console.log(
+        "ARTICLE TRIMMED TO:",
+        content.length
+      );
+    }
+
+    // 4. CHECK GEMINI API KEY
     if (!process.env.GEMINI_API_KEY) {
       console.error("GEMINI_API_KEY is missing");
 
@@ -90,18 +88,11 @@ const analyzeNews = async (req, res) => {
       });
     }
 
-    // ==========================================
-    // 4. SEND ARTICLE TO GEMINI
-    // ==========================================
-
-    console.log("Sending article to Gemini...");
-
+    // 5. GEMINI PROMPT
     const prompt = `
-You are an AI news analysis assistant.
+Analyze this news article and return ONLY valid JSON.
 
-Analyze the following news article.
-
-Return ONLY valid JSON in exactly this format:
+Format:
 
 {
   "summary": "short summary",
@@ -113,44 +104,35 @@ Return ONLY valid JSON in exactly this format:
 
 Rules:
 
-- fakeScore must be a number from 0 to 100.
-- credibilityScore must be a number from 0 to 100.
-
-- fakeScore represents the estimated risk that the article contains
-  false or misleading information.
-
-- credibilityScore represents how credible and factually consistent
-  the article appears based on the information provided.
-
-- Do not assume that every article must have a fakeScore above 0.
-- If the article contains a straightforward factual statement with no
-  apparent falsehood or misleading claim, fakeScore can be 0.
-- If the article appears highly credible, credibilityScore can be 100.
-
-- bias must be one of:
-  "Neutral", "Left", "Right", "Mixed"
-
-- sentiment must be one of:
-  "Positive", "Negative", "Neutral"
-
-- summary must be short and clear.
-
+- fakeScore: 0-100, higher means greater misinformation risk.
+- credibilityScore: 0-100, higher means more credible.
+- bias: Neutral, Left, Right, or Mixed.
+- sentiment: Positive, Negative, or Neutral.
+- Keep summary short and clear.
 - Do not use markdown.
-- Do not add anything outside the JSON.
+- Do not add anything outside JSON.
 
 Article:
+
 ${content}
 `;
+
+    // 6. SEND TO GEMINI 3.8 FLASH
+    console.log("Sending article to Gemini 3.8 Flash...");
 
     const aiResponse = await ai.models.generateContent({
       model:
         process.env.GEMINI_MODEL ||
-        "gemini-3.5-flash-lite",
+        "gemini-3.8-flash",
 
       contents: prompt,
 
       config: {
         responseMimeType: "application/json",
+
+        thinkingConfig: {
+          thinkingLevel: "low",
+        },
       },
     });
 
@@ -167,10 +149,7 @@ ${content}
       });
     }
 
-    // ==========================================
-    // 5. PARSE GEMINI JSON
-    // ==========================================
-
+    // 7. PARSE GEMINI JSON
     let analysis;
 
     try {
@@ -190,10 +169,7 @@ ${content}
 
     console.log("ANALYSIS:", analysis);
 
-    // ==========================================
-    // 6. NORMALIZE SCORES
-    // ==========================================
-
+    // 8. NORMALIZE SCORES
     const fakeScore = Math.min(
       100,
       Math.max(
@@ -210,26 +186,9 @@ ${content}
       )
     );
 
-    // ==========================================
-    // 7. FINAL VERDICT
-    // ==========================================
-
+    // 9. FINAL VERDICT
     let finalVerdict;
     let verdictType;
-
-    /*
-      VERDICT RULES
-
-      Fake Score >= 50
-          -> Likely Fake News
-
-      Fake Score < 50 AND
-      Credibility >= 70
-          -> Likely Genuine News
-
-      Otherwise
-          -> Needs Verification
-    */
 
     if (fakeScore >= 50) {
       finalVerdict = "Likely Fake News";
@@ -242,30 +201,21 @@ ${content}
       verdictType = "UNCERTAIN";
     }
 
-    console.log(
-      "FAKE SCORE:",
-      fakeScore
-    );
-
+    console.log("FAKE SCORE:", fakeScore);
     console.log(
       "CREDIBILITY SCORE:",
       credibilityScore
     );
-
     console.log(
       "FINAL VERDICT:",
       finalVerdict
     );
-
     console.log(
       "VERDICT TYPE:",
       verdictType
     );
 
-    // ==========================================
-    // 8. SAVE ANALYSIS IN DATABASE
-    // ==========================================
-
+    // 10. SAVE ANALYSIS
     const savedAnalysis =
       await prisma.analysis.create({
         data: {
@@ -307,10 +257,7 @@ ${content}
       savedAnalysis.id
     );
 
-    // ==========================================
-    // 9. SEND RESULT TO FRONTEND
-    // ==========================================
-
+    // 11. SEND RESULT TO FRONTEND
     return res.status(200).json({
       success: true,
 
@@ -326,11 +273,6 @@ ${content}
     });
 
   } catch (err) {
-
-    // ==========================================
-    // ERROR LOGGING
-    // ==========================================
-
     console.error(
       "===== ANALYZE ERROR ====="
     );
@@ -350,23 +292,16 @@ ${content}
       err.response?.data
     );
 
-    // ==========================================
     // URL SCRAPING BLOCKED
-    // ==========================================
-
     if (err.response?.status === 403) {
       return res.status(400).json({
         success: false,
-
         message:
           "This website does not allow automatic article access. Please paste the article text instead.",
       });
     }
 
-    // ==========================================
     // GEMINI AUTHENTICATION ERROR
-    // ==========================================
-
     if (
       err.status === 401 ||
       err.status === 403 ||
@@ -376,58 +311,42 @@ ${content}
     ) {
       return res.status(500).json({
         success: false,
-
         message:
           "Gemini authentication failed. Please check the Gemini API key.",
       });
     }
 
-    // ==========================================
     // GEMINI RATE LIMIT
-    // ==========================================
-
     if (err.status === 429) {
       return res.status(429).json({
         success: false,
-
         message:
           "Gemini rate limit reached. Please try again later.",
       });
     }
 
-    // ==========================================
     // GEMINI SERVICE UNAVAILABLE
-    // ==========================================
-
     if (err.status === 503) {
       return res.status(503).json({
         success: false,
-
         message:
           "Gemini is currently experiencing high demand. Please try again in a few moments.",
       });
     }
 
-    // ==========================================
     // TIMEOUT
-    // ==========================================
-
     if (
       err.code === "ECONNABORTED" ||
       err.code === "ETIMEDOUT"
     ) {
       return res.status(408).json({
         success: false,
-
         message:
           "The request took too long. Please try again.",
       });
     }
 
-    // ==========================================
     // GENERAL ERROR
-    // ==========================================
-
     return res.status(500).json({
       success: false,
 
@@ -446,7 +365,6 @@ ${content}
 
 const getDashboardStats = async (req, res) => {
   try {
-
     const analyses =
       await prisma.analysis.findMany({
         where: {
@@ -503,7 +421,6 @@ const getDashboardStats = async (req, res) => {
     });
 
   } catch (error) {
-
     console.error(
       "DASHBOARD STATS ERROR:",
       error
@@ -511,7 +428,6 @@ const getDashboardStats = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-
       message:
         "Failed to fetch dashboard statistics.",
     });
