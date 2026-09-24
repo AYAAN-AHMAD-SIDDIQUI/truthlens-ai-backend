@@ -13,7 +13,6 @@ const analyzeNews = async (req, res) => {
 
     console.log("===== ANALYZE REQUEST =====");
     console.log("URL:", url);
-    console.log("Article:", articleText);
 
     // 1. CHECK INPUT
     if (!url?.trim() && !articleText?.trim()) {
@@ -37,7 +36,6 @@ const analyzeNews = async (req, res) => {
             "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
           "Accept-Language": "en-US,en;q=0.9",
           Referer: "https://www.google.com/",
-          Connection: "keep-alive",
         },
         timeout: 15000,
       });
@@ -117,13 +115,13 @@ Article:
 ${content}
 `;
 
-    // 6. SEND TO GEMINI 3.8 FLASH
-    console.log("Sending article to Gemini 3.8 Flash...");
+    // 6. GEMINI 2.5 FLASH-LITE
+    console.log("Sending article to Gemini 2.5 Flash-Lite...");
 
     const aiResponse = await ai.models.generateContent({
       model:
         process.env.GEMINI_MODEL ||
-        "gemini-3.8-flash",
+        "gemini-2.5-flash-lite",
 
       contents: prompt,
 
@@ -131,7 +129,7 @@ ${content}
         responseMimeType: "application/json",
 
         thinkingConfig: {
-          thinkingLevel: "low",
+          thinkingBudget: 0,
         },
       },
     });
@@ -156,10 +154,7 @@ ${content}
       analysis = JSON.parse(aiContent);
     } catch (error) {
       console.error("JSON PARSE ERROR:", error);
-      console.error(
-        "RAW GEMINI RESPONSE:",
-        aiContent
-      );
+      console.error("RAW GEMINI RESPONSE:", aiContent);
 
       return res.status(500).json({
         success: false,
@@ -202,53 +197,36 @@ ${content}
     }
 
     console.log("FAKE SCORE:", fakeScore);
-    console.log(
-      "CREDIBILITY SCORE:",
-      credibilityScore
-    );
-    console.log(
-      "FINAL VERDICT:",
-      finalVerdict
-    );
-    console.log(
-      "VERDICT TYPE:",
-      verdictType
-    );
+    console.log("CREDIBILITY SCORE:", credibilityScore);
+    console.log("FINAL VERDICT:", finalVerdict);
+    console.log("VERDICT TYPE:", verdictType);
 
     // 10. SAVE ANALYSIS
     const savedAnalysis =
       await prisma.analysis.create({
         data: {
           title:
-            url?.trim() ||
-            "Manual News",
+            url?.trim() || "Manual News",
 
           url:
-            url?.trim() ||
-            null,
+            url?.trim() || null,
 
           articleText: content,
 
           summary:
-            analysis.summary ||
-            "",
+            analysis.summary || "",
 
-          fakeScore:
-            fakeScore,
+          fakeScore,
 
-          credibilityScore:
-            credibilityScore,
+          credibilityScore,
 
           bias:
-            analysis.bias ||
-            "Neutral",
+            analysis.bias || "Neutral",
 
           sentiment:
-            analysis.sentiment ||
-            "Neutral",
+            analysis.sentiment || "Neutral",
 
-          userId:
-            req.user.id,
+          userId: req.user.id,
         },
       });
 
@@ -273,24 +251,10 @@ ${content}
     });
 
   } catch (err) {
-    console.error(
-      "===== ANALYZE ERROR ====="
-    );
-
-    console.error(
-      "MESSAGE:",
-      err.message
-    );
-
-    console.error(
-      "STATUS:",
-      err.status
-    );
-
-    console.error(
-      "DATA:",
-      err.response?.data
-    );
+    console.error("===== ANALYZE ERROR =====");
+    console.error("MESSAGE:", err.message);
+    console.error("STATUS:", err.status);
+    console.error("DATA:", err.response?.data);
 
     // URL SCRAPING BLOCKED
     if (err.response?.status === 403) {
@@ -349,7 +313,6 @@ ${content}
     // GENERAL ERROR
     return res.status(500).json({
       success: false,
-
       message:
         err.response?.data?.error?.message ||
         err.response?.data?.message ||
