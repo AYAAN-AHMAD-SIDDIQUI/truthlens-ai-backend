@@ -1,6 +1,11 @@
 const axios = require("axios");
 const cheerio = require("cheerio");
 const prisma = require("../config/prisma");
+const ai = require("../config/gemini");
+
+// ==========================================
+// ANALYZE NEWS
+// ==========================================
 
 const analyzeNews = async (req, res) => {
   try {
@@ -20,7 +25,7 @@ const analyzeNews = async (req, res) => {
 
     let content = articleText?.trim() || "";
 
-    // 2. If URL is provided, scrape article
+    // 2. Scrape URL if provided
     if (url?.trim()) {
       console.log("Scraping URL...");
 
@@ -59,36 +64,25 @@ const analyzeNews = async (req, res) => {
 
     console.log("CONTENT LENGTH:", content.length);
 
-    // 3. Check OpenRouter API key
-    if (!process.env.OPENROUTER_API_KEY) {
-      console.error("OPENROUTER_API_KEY is missing");
+    // 3. Check Gemini API key
+    if (!process.env.GEMINI_API_KEY) {
+      console.error("GEMINI_API_KEY is missing");
 
       return res.status(500).json({
         success: false,
-        message: "OpenRouter API key is missing in backend .env file.",
+        message: "Gemini API key is missing in backend .env file.",
       });
     }
 
-    // 4. Send article to OpenRouter
-    console.log("Sending article to OpenRouter...");
+    // 4. Send article to Gemini
+    console.log("Sending article to Gemini...");
 
-    const aiResponse = await axios.post(
-      "https://openrouter.ai/api/v1/chat/completions",
-      {
-        model: "nvidia/nemotron-3-ultra-550b-a55b:free",
+    const prompt = `
+You are an AI news analysis assistant.
 
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are an AI news analysis assistant. Return only valid JSON.",
-          },
-          {
-            role: "user",
-            content: `
-Analyze this news article.
+Analyze the following news article.
 
-Return ONLY JSON in exactly this format:
+Return ONLY valid JSON in exactly this format:
 
 {
   "summary": "short summary",
@@ -98,50 +92,52 @@ Return ONLY JSON in exactly this format:
   "sentiment": "Neutral"
 }
 
-fakeScore must be a number from 0 to 100.
-credibilityScore must be a number from 0 to 100.
+Rules:
+- fakeScore must be a number from 0 to 100.
+- credibilityScore must be a number from 0 to 100.
+- bias must be one of: "Neutral", "Left", "Right", "Mixed".
+- sentiment must be one of: "Positive", "Negative", "Neutral".
+- summary must be short and clear.
+- Do not use markdown.
+- Do not add anything outside the JSON.
 
 Article:
 ${content}
-`,
-          },
-        ],
+`;
+
+    const aiResponse = await ai.models.generateContent({
+      model: process.env.GEMINI_MODEL || "gemini-2.5-flash-lite",
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
       },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        timeout: 60000,
-      }
-    );
+    });
 
-    console.log("OpenRouter response received");
+    console.log("Gemini response received");
 
-    const aiContent =
-      aiResponse.data?.choices?.[0]?.message?.content;
+    const aiContent = aiResponse.text;
 
     console.log("AI RESPONSE:", aiContent);
 
     if (!aiContent) {
       return res.status(500).json({
         success: false,
-        message: "OpenRouter returned an empty response.",
+        message: "Gemini returned an empty response.",
       });
     }
 
-    // 5. Parse AI JSON
+    // 5. Parse Gemini JSON
     let analysis;
 
     try {
       analysis = JSON.parse(aiContent);
     } catch (error) {
       console.error("JSON PARSE ERROR:", error);
-      console.error("RAW AI RESPONSE:", aiContent);
+      console.error("RAW GEMINI RESPONSE:", aiContent);
 
       return res.status(500).json({
         success: false,
-        message: "AI returned invalid JSON.",
+        message: "Gemini returned invalid JSON.",
       });
     }
 
@@ -174,7 +170,7 @@ ${content}
   } catch (err) {
     console.error("===== ANALYZE ERROR =====");
     console.error("MESSAGE:", err.message);
-    console.error("STATUS:", err.response?.status);
+    console.error("STATUS:", err.status);
     console.error("DATA:", err.response?.data);
 
     // URL scraping blocked
@@ -186,30 +182,36 @@ ${content}
       });
     }
 
-    // OpenRouter authentication error
-    if (err.response?.status === 401) {
+    // Gemini authentication error
+    if (
+      err.status === 401 ||
+      err.status === 403 ||
+      err.message?.toLowerCase().includes("api key")
+    ) {
       return res.status(500).json({
         success: false,
         message:
-          "AI service authentication failed. Please check the OpenRouter API key.",
+          "Gemini authentication failed. Please check the Gemini API key.",
       });
     }
 
-    // OpenRouter rate limit
-    if (err.response?.status === 429) {
+    // Gemini rate limit
+    if (err.status === 429) {
       return res.status(429).json({
         success: false,
         message:
-          "AI service rate limit reached. Please try again after a short while.",
+          "Gemini rate limit reached. Please try again later.",
       });
     }
 
-    // Request timeout
-    if (err.code === "ECONNABORTED") {
+    // Timeout
+    if (
+      err.code === "ECONNABORTED" ||
+      err.code === "ETIMEDOUT"
+    ) {
       return res.status(408).json({
         success: false,
-        message:
-          "The request took too long. Please try again.",
+        message: "The request took too long. Please try again.",
       });
     }
 
@@ -224,7 +226,6 @@ ${content}
     });
   }
 };
-
 
 // ==========================================
 // DASHBOARD STATS
@@ -277,7 +278,6 @@ const getDashboardStats = async (req, res) => {
     });
   }
 };
-
 
 module.exports = {
   analyzeNews,
