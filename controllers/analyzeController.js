@@ -50,11 +50,13 @@ const getSafeArticleUrl = async (rawUrl) => {
     }
     pinnedAddress = hostname;
   } else {
-    const records = await dns.lookup(hostname, { all: true, verbatim: true });
-    if (!records.length || records.some((record) => !isPublicIPv4(record.address))) {
+    // Resolve only IPv4 records and pin the chosen public address for the request.
+    // This avoids accidentally rejecting dual-stack public websites because of their AAAA record.
+    const records = await dns.resolve4(hostname);
+    if (!records.length || records.some((address) => !isPublicIPv4(address))) {
       throw new Error("This URL does not resolve exclusively to public IPv4 addresses.");
     }
-    pinnedAddress = records[0].address;
+    pinnedAddress = records[0];
   }
 
   const pinnedLookup = (requestedHost, options, callback) => {
